@@ -1,0 +1,287 @@
+/*
+ * Copyright (C) 2016+ AzerothCore <www.azerothcore.org>, released under GNU AGPL v3 license: https://github.com/azerothcore/azerothcore-wotlk/blob/master/LICENSE-AGPL3
+ */
+
+#include "ScriptMgr.h"
+#include "Player.h"
+#include "Config.h"
+#include "Chat.h"
+
+struct SpellTier {
+    int requiredLevel;
+    uint32 spellId;
+};
+
+// Add player scripts
+class MyPlayerMigration : public PlayerScript
+{
+public:
+    MyPlayerMigration() : PlayerScript("MyPlayerMigration") { }
+
+    void OnPlayerLogin(Player* player) override
+    {
+        if (player->GetLevel() > 1)
+            return;
+
+        if(player->GetLevelUpType() != LEVEL_TYPE_NORMAL)
+            return;
+
+        // Check char database, table characters_migration_data if exist guid
+        uint32 guid = player->GetGUID().GetCounter();
+        QueryResult result = CharacterDatabase.Query("SELECT * FROM characters_migration_data WHERE guid = {} AND status = 0;", guid);
+        if (result)
+        {
+            //migrationId, guid, level, money, arena, honor, currency, item, mount, title, achievement, reputation, profesion
+            Field* fields = result->Fetch();
+            uint32 migrationId = fields[0].Get<uint32>();
+            uint32 level = fields[2].Get<uint32>();
+            uint32 money = fields[3].Get<uint32>();
+            uint32 arena = fields[4].Get<uint32>();
+            uint32 honor = fields[5].Get<uint32>();
+            std::string currency = fields[6].Get<std::string>();
+            std::string item = fields[7].Get<std::string>();
+            std::string mount = fields[8].Get<std::string>();
+            std::string title = fields[9].Get<std::string>();
+            std::string achievement = fields[10].Get<std::string>();
+            std::string reputation = fields[11].Get<std::string>();
+            std::string profesions = fields[12].Get<std::string>();
+
+            player->SetLevel(level);
+            player->SetMoney(money);
+            //player->SetArenaPoints(arena);
+            //player->SetHonorPoints(honor);
+
+            auto currencyArray = parseItems(currency);
+            auto splitCurrencyArray = splitItemsByStack(currencyArray);
+            enviarItemsEnCorreos(player, splitCurrencyArray);
+
+            auto itemsArray = parseItems(item);
+            auto splitItemsArray = splitItemsByStack(itemsArray);
+            enviarItemsEnCorreos(player, splitItemsArray);
+
+            auto mounts = parseMounts(mount);
+            for (int mountId : mounts) {
+                if(!player->HasSpell(mountId))
+                    player->learnSpell(mountId, false);
+            }
+
+            /*auto titles = parseMounts(title);
+            for (int titleId : titles) {
+                CharTitlesEntry const* t = sCharTitlesStore.LookupEntry(titleId);
+                if (t)
+                    player->SetTitle(t, false);
+            }*/
+
+            auto repuArray = parseItems(reputation);
+            for (auto& [entry, qty] : repuArray) {
+                //std::cout << "Entry: " << entry << " -> Cantidad: " << qty << std::endl;
+                if(player->GetReputation(entry) < qty)
+                    player->SetReputation(entry, qty);
+            }
+
+            processProfessions(player, profesions);
+
+            /*auto achievementArray = parseMounts(achievement);
+            for (int achievementId : achievementArray) {
+                if (!player->HasAchieved(achievementId)) {
+                    AchievementEntry const* a = sAchievementStore.LookupEntry(achievementId);
+                    player->GetAchievementMgr()->CompletedAchievement(a);
+                }
+            }*/
+
+            player->SetLevelUpType(LEVEL_TYPE_MIGRATION);
+            //update status = 1
+            CharacterDatabase.Execute("UPDATE characters_migration_data SET status = 1 WHERE guid = {} AND migrationId = {};", guid, migrationId);
+        }
+    }
+private:
+    std::vector<std::pair<int, int>> parseItems(const std::string& data) {
+        std::vector<std::pair<int, int>> items;
+        std::stringstream ss(data);
+        std::string pair;
+
+        // Separar por ';'
+        while (std::getline(ss, pair, ';')) {
+            size_t pos = pair.find(':');
+            if (pos != std::string::npos) {
+                int entry = std::stoi(pair.substr(0, pos));         // parte antes de ':'
+                int quantity = std::stoi(pair.substr(pos + 1));     // parte después de ':'
+                items.emplace_back(entry, quantity);
+            }
+        }
+        return items;
+    }
+
+    std::vector<int> parseMounts(const std::string& data) {
+        std::vector<int> mounts;
+        std::stringstream ss(data);
+        std::string entry;
+
+        while (std::getline(ss, entry, ';')) {
+            if (!entry.empty()) {
+                mounts.push_back(std::stoi(entry));
+            }
+        }
+        return mounts;
+    }
+
+    std::vector<std::pair<int, int>> splitItemsByStack(
+        const std::vector<std::pair<int, int>>& itemsArray
+    ) {
+        std::vector<std::pair<int, int>> result;
+
+        for (auto& [entry, qty] : itemsArray) {
+            ItemTemplate const* itemTemplate = sObjectMgr->GetItemTemplate(entry);
+            if (!itemTemplate) {
+                continue;
+            }
+
+            uint32 stackable = itemTemplate->Stackable;
+            if (stackable == 0) stackable = 1; // por si acaso
+
+            int remaining = qty;
+            while (remaining > 0) {
+                int amount = (remaining >= stackable) ? stackable : remaining;
+                result.emplace_back(entry, amount);
+                remaining -= amount;
+            }
+        }
+
+        return result;
+    }
+
+    void enviarItemsEnCorreos(Player* player, const std::vector<std::pair<int, int>>& itemsArray) {
+        const uint32 MAX_ITEMS_PER_MAIL = 12;
+        const std::string subject = "Migración";
+        const std::string text = "Felicidades, tu migración fue aceptada y tus items los recibes en este correo.";
+        const uint32 senderGUIDLow = 0;
+        const uint32 stationary = 61;
+        const uint32 delay = 0;
+        const uint32 money = 0;
+        const uint32 cod = 0;
+
+        size_t totalItems = itemsArray.size();
+        size_t index = 0;
+
+        while (index < totalItems) {
+            MailSender sender(MAIL_NORMAL, senderGUIDLow, (MailStationery)stationary);
+            MailDraft draft(subject, text);
+
+            if (cod)
+                draft.AddCOD(cod);
+            if (money)
+                draft.AddMoney(money);
+
+            CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
+
+            // Agregar hasta 12 ítems
+            for (size_t count = 0; count < MAX_ITEMS_PER_MAIL && index < totalItems; ++count, ++index) {
+                uint32 entry = itemsArray[index].first;
+                uint32 amount = itemsArray[index].second;
+
+                if (Item* item = Item::CreateItem(entry, amount)) {
+                    item->SaveToDB(trans);
+                    draft.AddItem(item);
+                }
+            }
+
+            // Enviar el correo
+            draft.SendMailTo(trans, MailReceiver(player, player->GetGUID().GetCounter()), sender, MAIL_CHECK_MASK_NONE, delay);
+            CharacterDatabase.CommitTransaction(trans);
+        }
+    }
+
+    void learnProfessionSpells(Player* player, const std::string& profession, int level) {
+        // Convertir a minúsculas
+        std::string prof = profession;
+        std::transform(prof.begin(), prof.end(), prof.begin(), ::tolower);
+
+        // Diccionario: profesión -> lista de {nivel requerido, id de hechizo}
+        static const std::unordered_map<std::string, std::vector<SpellTier>> professionSpells = {
+            {"primeros auxilios", {{75,3273},{150,3274},{225,7924},{300,10846},{375,27028},{450,45542}}},
+            {"herrería", {{75,2018},{150,3100},{225,3538},{300,9785},{375,29844},{450,51300}}},
+            {"peletería", {{75,2108},{150,3104},{225,3811},{300,10662},{375,32549},{450,51302}}},
+            {"alquimia", {{75,2259},{150,3101},{225,3464},{300,11611},{375,28596},{450,51304}}},
+            {"herboristería", {{75,2366},{150,2368},{225,3570},{300,11993},{375,28695},{450,50300}}},
+            {"cocina", {{75,2550},{150,3102},{225,3413},{300,18260},{375,33359},{450,51296}}},
+            {"minería", {{75,2575},{150,2576},{225,3564},{300,10248},{375,29354},{450,50310}}},
+            {"sastrería", {{75,3908},{150,3909},{225,3910},{300,12180},{375,26790},{450,51309}}},
+            {"ingeniería", {{75,4036},{150,4037},{225,4038},{300,12656},{375,30350},{450,51306}}},
+            {"encantamiento", {{75,7411},{150,7412},{225,7413},{300,13920},{375,28029},{450,51313}}},
+            {"pesca", {{75,7620},{150,7731},{225,7732},{300,18248},{375,33095},{450,51294}}},
+            {"desollar", {{75,8613},{150,8617},{225,8618},{300,10768},{375,32678},{450,50305}}},
+            {"joyería", {{75,25229},{150,25230},{225,28894},{300,28895},{375,28897},{450,51311}}},
+            {"inscripción", {{75,45357},{150,45358},{225,45359},{300,45360},{375,45361},{450,45363}}}
+        };
+
+        auto it = professionSpells.find(prof);
+        if (it != professionSpells.end()) {
+            for (const auto& tier : it->second) {
+                if (level >= tier.requiredLevel) {
+                    player->learnSpell(tier.spellId);
+                }
+            }
+        }
+    }
+
+    void processProfessions(Player* player, const std::string& data) {
+        static const std::unordered_map<std::string, uint32> professionSkillIds = {
+            {"primeros auxilios", 129},
+            {"cocina", 185},
+            {"pesca", 356},
+            {"inscripción", 773},
+            {"joyería", 755},
+            {"peletería", 165},
+            {"herrería", 164},
+            {"alquimia", 171},
+            {"encantamiento", 333},
+            {"ingeniería", 202},
+            {"sastrería", 197},
+            {"minería", 186},
+            {"desollar", 393},
+            {"herboristería", 182}
+        };
+
+        std::stringstream ss(data);
+        std::string token;
+
+        while (std::getline(ss, token, ';')) {
+            std::stringstream part(token);
+            std::string profName, lvlStr, ptsStr;
+
+            if (std::getline(part, profName, ':') &&
+                std::getline(part, lvlStr, ':') &&
+                std::getline(part, ptsStr, ':'))
+            {
+                // Convertir a minúsculas para búsqueda
+                std::transform(profName.begin(), profName.end(), profName.begin(), ::tolower);
+
+                int level = std::stoi(lvlStr);
+                int puntos = std::stoi(ptsStr);
+
+                // Aprender la profesión y sus rangos de hechizos
+                learnProfessionSpells(player, profName, level);
+
+                // Buscar el skillId correspondiente
+                auto it = professionSkillIds.find(profName);
+                if (it != professionSkillIds.end()) {
+                    uint32 skillId = it->second;
+                    bool targetHasSkill = player->GetSkillValue(skillId);
+
+                    player->SetSkill(skillId, targetHasSkill ? player->GetSkillStep(skillId) : 1, puntos, level);
+                    // Setear puntos en el skill
+                    //player->SetSkill(skillId, level, puntos);
+                    // Nota: Dependiendo de tu core, podría ser player->SetSkill(skillId, puntos, puntos);
+                }
+            }
+        }
+    }
+
+
+};
+
+// Add all scripts in one
+void AddMyPlayerMigrationScripts()
+{
+    new MyPlayerMigration();
+}
