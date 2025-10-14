@@ -1,15 +1,26 @@
 /*
  * Copyright (C) 2016+ AzerothCore <www.azerothcore.org>, released under GNU AGPL v3 license: https://github.com/azerothcore/azerothcore-wotlk/blob/master/LICENSE-AGPL3
  */
+#include "ServerSystem.h"
 
-#include "ScriptMgr.h"
-#include "Player.h"
-#include "Config.h"
-#include "Chat.h"
 
 struct SpellTier {
     int requiredLevel;
     uint32 spellId;
+};
+
+class TeleportMigrationPlayer : public BasicEvent
+{
+public:
+    TeleportMigrationPlayer(Player* player) : _player(player) { }
+
+    bool Execute(uint64 /*eventTime*/, uint32 /*updateTime*/) override {
+        _player->TeleportTo(1, -10739.21, 2442.38, 7.700, 4.99);
+        return true;
+    }
+
+private:
+    Player* _player;
 };
 
 // Add player scripts
@@ -26,74 +37,125 @@ public:
         if(player->GetLevelUpType() != LEVEL_TYPE_NORMAL)
             return;
 
-        // Check char database, table characters_migration_data if exist guid
         uint32 guid = player->GetGUID().GetCounter();
         QueryResult result = CharacterDatabase.Query("SELECT * FROM characters_migration_data WHERE guid = {} AND status = 0;", guid);
         if (result)
         {
-            //migrationId, guid, level, money, arena, honor, currency, item, mount, title, achievement, reputation, profesion
-            Field* fields = result->Fetch();
-            uint32 migrationId = fields[0].Get<uint32>();
-            uint32 level = fields[2].Get<uint32>();
-            uint32 money = fields[3].Get<uint32>();
-            uint32 arena = fields[4].Get<uint32>();
-            uint32 honor = fields[5].Get<uint32>();
-            std::string currency = fields[6].Get<std::string>();
-            std::string item = fields[7].Get<std::string>();
-            std::string mount = fields[8].Get<std::string>();
-            std::string title = fields[9].Get<std::string>();
-            std::string achievement = fields[10].Get<std::string>();
-            std::string reputation = fields[11].Get<std::string>();
-            std::string profesions = fields[12].Get<std::string>();
-
-            player->SetLevel(level);
-            player->SetMoney(money);
-            //player->SetArenaPoints(arena);
-            //player->SetHonorPoints(honor);
-
-            auto currencyArray = parseItems(currency);
-            auto splitCurrencyArray = splitItemsByStack(currencyArray);
-            enviarItemsEnCorreos(player, splitCurrencyArray);
-
-            auto itemsArray = parseItems(item);
-            auto splitItemsArray = splitItemsByStack(itemsArray);
-            enviarItemsEnCorreos(player, splitItemsArray);
-
-            auto mounts = parseMounts(mount);
-            for (int mountId : mounts) {
-                if(!player->HasSpell(mountId))
-                    player->learnSpell(mountId, false);
-            }
-
-            /*auto titles = parseMounts(title);
-            for (int titleId : titles) {
-                CharTitlesEntry const* t = sCharTitlesStore.LookupEntry(titleId);
-                if (t)
-                    player->SetTitle(t, false);
-            }*/
-
-            auto repuArray = parseItems(reputation);
-            for (auto& [entry, qty] : repuArray) {
-                //std::cout << "Entry: " << entry << " -> Cantidad: " << qty << std::endl;
-                if(player->GetReputation(entry) < qty)
-                    player->SetReputation(entry, qty);
-            }
-
-            processProfessions(player, profesions);
-
-            /*auto achievementArray = parseMounts(achievement);
-            for (int achievementId : achievementArray) {
-                if (!player->HasAchieved(achievementId)) {
-                    AchievementEntry const* a = sAchievementStore.LookupEntry(achievementId);
-                    player->GetAchievementMgr()->CompletedAchievement(a);
-                }
-            }*/
-
-            player->SetLevelUpType(LEVEL_TYPE_MIGRATION);
-            //update status = 1
-            CharacterDatabase.Execute("UPDATE characters_migration_data SET status = 1 WHERE guid = {} AND migrationId = {};", guid, migrationId);
+            player->m_Events.AddEvent(new TeleportMigrationPlayer(player), player->m_Events.CalculateTime(3000));
         }
     }
+};
+
+class MigrationNPC : public CreatureScript {
+public:
+    MigrationNPC() : CreatureScript("MigrationNPC") { }
+
+    bool OnGossipHello(Player* player, Creature* creature) override {
+        ClearGossipMenuFor(player);
+        AddGossipItemFor(player, GOSSIP_ICON_CHAT, "Reclamar migración", 0, 1);
+        AddGossipItemFor(player, GOSSIP_ICON_CHAT, "Adios", 0, 4);
+
+        sServerSystem->SetGossipText(player, "Saludos $N, si estás aqui es porque te aprobaron tu migración y ya puedes reclamarla. Hazlo una sola vez y revisa tu correo. Suerte y bienvenido a Murloc Wow.\nNota: Si tu personaje tiene algún progreso o elegiste algun reto de leveo entonces la migración será cancelada y deberas ponerte en contacto con un administrador.", 600410);
+        SendGossipMenuFor(player, 600410, creature);
+        return true;
+    }
+
+    bool OnGossipSelect(Player* player, Creature* creature, uint32 sender, uint32 action) override {
+        ClearGossipMenuFor(player);
+        switch (action) {
+        case 1: {
+            if (player->GetLevel() > 1) {
+                ChatHandler(player->GetSession()).SendNotification("Debes ser nivel 1 para poder reclamar la migración.");
+                CloseGossipMenuFor(player);
+                return true;
+            }
+
+            if (player->GetLevelUpType() != LEVEL_TYPE_NORMAL) {
+                ChatHandler(player->GetSession()).SendNotification("Tu personaje ya tiene un progreso, por favor contacta un administrador.");
+                CloseGossipMenuFor(player);
+                return true;
+            }
+
+            // Check char database, table characters_migration_data if exist guid
+            uint32 guid = player->GetGUID().GetCounter();
+            QueryResult result = CharacterDatabase.Query("SELECT * FROM characters_migration_data WHERE guid = {} AND status = 0;", guid);
+            if (result)
+            {
+                //migrationId, guid, level, money, arena, honor, currency, item, mount, title, achievement, reputation, profesion
+                Field* fields = result->Fetch();
+                uint32 migrationId = fields[0].Get<uint32>();
+                uint32 level = fields[2].Get<uint32>();
+                uint32 money = fields[3].Get<uint32>();
+                uint32 arena = fields[4].Get<uint32>();
+                uint32 honor = fields[5].Get<uint32>();
+                std::string currency = fields[6].Get<std::string>();
+                std::string item = fields[7].Get<std::string>();
+                std::string mount = fields[8].Get<std::string>();
+                std::string title = fields[9].Get<std::string>();
+                std::string achievement = fields[10].Get<std::string>();
+                std::string reputation = fields[11].Get<std::string>();
+                std::string profesions = fields[12].Get<std::string>();
+
+                player->SetLevel(level);
+                player->SetMoney(money);
+                //player->SetArenaPoints(arena);
+                //player->SetHonorPoints(honor);
+
+                auto currencyArray = parseItems(currency);
+                auto splitCurrencyArray = splitItemsByStack(currencyArray);
+                enviarItemsEnCorreos(player, splitCurrencyArray);
+
+                auto itemsArray = parseItems(item);
+                auto splitItemsArray = splitItemsByStack(itemsArray);
+                enviarItemsEnCorreos(player, splitItemsArray);
+
+                auto mounts = parseMounts(mount);
+                for (int mountId : mounts) {
+                    if (!player->HasSpell(mountId))
+                        player->learnSpell(mountId, false);
+                }
+
+                /*auto titles = parseMounts(title);
+                for (int titleId : titles) {
+                    CharTitlesEntry const* t = sCharTitlesStore.LookupEntry(titleId);
+                    if (t)
+                        player->SetTitle(t, false);
+                }*/
+
+                auto repuArray = parseItems(reputation);
+                for (auto& [entry, qty] : repuArray) {
+                    //std::cout << "Entry: " << entry << " -> Cantidad: " << qty << std::endl;
+                    if (player->GetReputation(entry) < qty)
+                        player->SetReputation(entry, qty);
+                }
+
+                processProfessions(player, profesions);
+
+                /*auto achievementArray = parseMounts(achievement);
+                for (int achievementId : achievementArray) {
+                    if (!player->HasAchieved(achievementId)) {
+                        AchievementEntry const* a = sAchievementStore.LookupEntry(achievementId);
+                        player->GetAchievementMgr()->CompletedAchievement(a);
+                    }
+                }*/
+
+                player->SetLevelUpType(LEVEL_TYPE_MIGRATION);
+                //update status = 1
+                CharacterDatabase.Execute("UPDATE characters_migration_data SET status = 1 WHERE guid = {} AND migrationId = {};", guid, migrationId);
+            }
+            CloseGossipMenuFor(player);
+            break;
+        }
+        case 4:
+            creature->Say("Adios!, espero verte pronto.", LANG_UNIVERSAL);
+            CloseGossipMenuFor(player);
+        default:
+            CloseGossipMenuFor(player);
+            break;
+        }
+        return true;
+    }
+
 private:
     std::vector<std::pair<int, int>> parseItems(const std::string& data) {
         std::vector<std::pair<int, int>> items;
@@ -277,11 +339,14 @@ private:
         }
     }
 
-
 };
+
+
+
 
 // Add all scripts in one
 void AddMyPlayerMigrationScripts()
 {
     new MyPlayerMigration();
+    new MigrationNPC();
 }
