@@ -164,14 +164,8 @@ public:
                 return true;
             }
 
-            if(player->getClass() == CLASS_DEATH_KNIGHT && player->GetLevel() > 55) {
-                ChatHandler(player->GetSession()).SendNotification("Debes ser nivel 55 para poder reclamar la migración.");
-                CloseGossipMenuFor(player);
-                return true;
-            }
-
-            if (player->getClass() == CLASS_DEATH_KNIGHT) {
-                ChatHandler(player->GetSession()).SendNotification("Hubo un error al migrar tu personaje, contacta un administrador.");
+            if(player->getClass() == CLASS_DEATH_KNIGHT && player->GetLevel() != 80) {
+                ChatHandler(player->GetSession()).SendNotification("Debes ser nivel 80 para poder reclamar la migración.");
                 CloseGossipMenuFor(player);
                 return true;
             }
@@ -202,7 +196,9 @@ public:
                 std::string reputation = fields[11].Get<std::string>();
                 std::string profesions = fields[12].Get<std::string>();
 
-                player->SetLevel(level);
+                if(player->getClass() != CLASS_DEATH_KNIGHT)
+                    player->SetLevel(level);
+
                 player->SetMoney(money);
                 //player->SetArenaPoints(arena);
                 //player->SetHonorPoints(honor);
