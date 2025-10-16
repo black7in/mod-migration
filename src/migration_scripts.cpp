@@ -25,6 +25,8 @@ private:
 
 void Azerothcore_skip_deathknight_HandleSkip(Player* player)
 {
+
+    ChatHandler(player->GetSession()).SendNotification("Hubo un error al migrar tu personaje, contacta un administrador.");
     //Not sure where DKs were supposed to pick this up from, leaving as the one manual add
     //player->AddItem(6948, true); //Hearthstone
 
@@ -85,15 +87,14 @@ void Azerothcore_skip_deathknight_HandleSkip(Player* player)
     //these are alternate reward items from quest 12801, item 38633 is chosen by default as the reward
     player->AddItem(38632, true);//Greatsword of the Ebon Blade
 
-    int DKL = 65;
+    int DKL = 80;
     if (player->GetLevel() <= DKL)
     {
         //GiveLevel updates character properties more thoroughly than SetLevel
         player->GiveLevel(DKL);
     }
 
-    if (sConfigMgr->GetOption<bool>("Skip.Deathknight.Start.Trained", false))
-    {
+
         player->addSpell(49998, SPEC_MASK_ALL, true); // Death Strike rank 1
         player->addSpell(47528, SPEC_MASK_ALL, true); // Mind Freeze
         player->addSpell(46584, SPEC_MASK_ALL, true); // Raise Dead
@@ -103,7 +104,6 @@ void Azerothcore_skip_deathknight_HandleSkip(Player* player)
         player->addSpell(53342, SPEC_MASK_ALL, true); // Rune of Spellshattering
         player->addSpell(48721, SPEC_MASK_ALL, true); // Blood Boil rank 1
         player->addSpell(54447, SPEC_MASK_ALL, true); // Rune of Spellbreaking
-    }
 
     //Don't need to save all players, just current
     player->SaveToDB(false, false);
