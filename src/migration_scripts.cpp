@@ -23,6 +23,94 @@ private:
     Player* _player;
 };
 
+void Azerothcore_skip_deathknight_HandleSkip(Player* player)
+{
+    //Not sure where DKs were supposed to pick this up from, leaving as the one manual add
+    //player->AddItem(6948, true); //Hearthstone
+
+    // these are all the starter quests that award talent points, quest items, or spells
+    int STARTER_QUESTS[33] = { 12593, 12619, 12842, 12848, 12636, 12641, 12657, 12678, 12679, 12680, 12687, 12698, 12701, 12706, 12716, 12719, 12720, 12722, 12724, 12725, 12727, 12733, -1, 12751, 12754, 12755, 12756, 12757, 12779, 12801, 13165, 13166 };
+
+    int specialSurpriseQuestId = -1;
+    switch (player->getRace())
+    {
+    case RACE_TAUREN:
+        specialSurpriseQuestId = 12739;
+        break;
+    case RACE_HUMAN:
+        specialSurpriseQuestId = 12742;
+        break;
+    case RACE_NIGHTELF:
+        specialSurpriseQuestId = 12743;
+        break;
+    case RACE_DWARF:
+        specialSurpriseQuestId = 12744;
+        break;
+    case RACE_GNOME:
+        specialSurpriseQuestId = 12745;
+        break;
+    case RACE_DRAENEI:
+        specialSurpriseQuestId = 12746;
+        break;
+    case RACE_BLOODELF:
+        specialSurpriseQuestId = 12747;
+        break;
+    case RACE_ORC:
+        specialSurpriseQuestId = 12748;
+        break;
+    case RACE_TROLL:
+        specialSurpriseQuestId = 12749;
+        break;
+    case RACE_UNDEAD_PLAYER:
+        specialSurpriseQuestId = 12750;
+        break;
+    }
+
+    STARTER_QUESTS[22] = specialSurpriseQuestId;
+    STARTER_QUESTS[32] = player->GetTeamId() == TEAM_ALLIANCE ? 13188 : 13189;
+
+    for (int questId : STARTER_QUESTS)
+    {
+        if (player->GetQuestStatus(questId) == QUEST_STATUS_NONE)
+        {
+            player->AddQuest(sObjectMgr->GetQuestTemplate(questId), nullptr);
+            player->RewardQuest(sObjectMgr->GetQuestTemplate(questId), 0, player, false);
+        }
+    }
+
+    //these are alternate reward items from quest 12679, item 39320 is chosen by default as the reward
+    player->AddItem(38664, true);//Sky Darkener's Shroud of the Unholy
+    player->AddItem(39322, true);//Shroud of the North Wind
+
+    //these are alternate reward items from quest 12801, item 38633 is chosen by default as the reward
+    player->AddItem(38632, true);//Greatsword of the Ebon Blade
+
+    int DKL = 65;
+    if (player->GetLevel() <= DKL)
+    {
+        //GiveLevel updates character properties more thoroughly than SetLevel
+        player->GiveLevel(DKL);
+    }
+
+    if (sConfigMgr->GetOption<bool>("Skip.Deathknight.Start.Trained", false))
+    {
+        player->addSpell(49998, SPEC_MASK_ALL, true); // Death Strike rank 1
+        player->addSpell(47528, SPEC_MASK_ALL, true); // Mind Freeze
+        player->addSpell(46584, SPEC_MASK_ALL, true); // Raise Dead
+        player->addSpell(45524, SPEC_MASK_ALL, true); // Chains of Ice
+        player->addSpell(48263, SPEC_MASK_ALL, true); // Frost Presence
+        player->addSpell(50842, SPEC_MASK_ALL, true); // Pestilence
+        player->addSpell(53342, SPEC_MASK_ALL, true); // Rune of Spellshattering
+        player->addSpell(48721, SPEC_MASK_ALL, true); // Blood Boil rank 1
+        player->addSpell(54447, SPEC_MASK_ALL, true); // Rune of Spellbreaking
+    }
+
+    //Don't need to save all players, just current
+    player->SaveToDB(false, false);
+
+    player->m_Events.AddEvent(new TeleportMigrationPlayer(player), player->m_Events.CalculateTime(3000));
+}
+
 // Add player scripts
 class MyPlayerMigration : public PlayerScript
 {
@@ -41,7 +129,10 @@ public:
         QueryResult result = CharacterDatabase.Query("SELECT * FROM characters_migration_data WHERE guid = {} AND status = 0;", guid);
         if (result)
         {
-            player->m_Events.AddEvent(new TeleportMigrationPlayer(player), player->m_Events.CalculateTime(3000));
+            if (player->getClass() == CLASS_DEATH_KNIGHT) {
+                Azerothcore_skip_deathknight_HandleSkip(player);
+            }else
+                player->m_Events.AddEvent(new TeleportMigrationPlayer(player), player->m_Events.CalculateTime(3000));
         }
     }
 };
@@ -64,8 +155,20 @@ public:
         ClearGossipMenuFor(player);
         switch (action) {
         case 1: {
-            if (player->GetLevel() > 1) {
+            if (player->getClass() != CLASS_DEATH_KNIGHT && player->GetLevel() > 1) {
                 ChatHandler(player->GetSession()).SendNotification("Debes ser nivel 1 para poder reclamar la migración.");
+                CloseGossipMenuFor(player);
+                return true;
+            }
+
+            if(player->getClass() == CLASS_DEATH_KNIGHT && player->GetLevel() > 55) {
+                ChatHandler(player->GetSession()).SendNotification("Debes ser nivel 55 para poder reclamar la migración.");
+                CloseGossipMenuFor(player);
+                return true;
+            }
+
+            if (player->getClass() == CLASS_DEATH_KNIGHT) {
+                ChatHandler(player->GetSession()).SendNotification("Hubo un error al migrar tu personaje, contacta un administrador.");
                 CloseGossipMenuFor(player);
                 return true;
             }
@@ -110,10 +213,11 @@ public:
                 enviarItemsEnCorreos(player, splitItemsArray);
 
                 auto mounts = parseMounts(mount);
-                for (int mountId : mounts) {
+                enviarMonturasEnCorreos(player, mounts);
+                /*for (int mountId : mounts) {
                     if (!player->HasSpell(mountId))
                         player->learnSpell(mountId, false);
-                }
+                }*/
 
                 /*auto titles = parseMounts(title);
                 for (int titleId : titles) {
@@ -240,6 +344,47 @@ private:
             for (size_t count = 0; count < MAX_ITEMS_PER_MAIL && index < totalItems; ++count, ++index) {
                 uint32 entry = itemsArray[index].first;
                 uint32 amount = itemsArray[index].second;
+
+                if (Item* item = Item::CreateItem(entry, amount)) {
+                    item->SaveToDB(trans);
+                    draft.AddItem(item);
+                }
+            }
+
+            // Enviar el correo
+            draft.SendMailTo(trans, MailReceiver(player, player->GetGUID().GetCounter()), sender, MAIL_CHECK_MASK_NONE, delay);
+            CharacterDatabase.CommitTransaction(trans);
+        }
+    }
+
+    void enviarMonturasEnCorreos(Player* player, const std::vector<int>& itemIds) {
+        const uint32 MAX_ITEMS_PER_MAIL = 12;
+        const std::string subject = "Migración";
+        const std::string text = "Felicidades, tu migración fue aceptada y tus items los recibes en este correo.";
+        const uint32 senderGUIDLow = 0;
+        const uint32 stationary = 61;
+        const uint32 delay = 0;
+        const uint32 money = 0;
+        const uint32 cod = 0;
+
+        size_t totalItems = itemIds.size();
+        size_t index = 0;
+
+        while (index < totalItems) {
+            MailSender sender(MAIL_NORMAL, senderGUIDLow, (MailStationery)stationary);
+            MailDraft draft(subject, text);
+
+            if (cod)
+                draft.AddCOD(cod);
+            if (money)
+                draft.AddMoney(money);
+
+            CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
+
+            // Agregar hasta 12 ítems
+            for (size_t count = 0; count < MAX_ITEMS_PER_MAIL && index < totalItems; ++count, ++index) {
+                uint32 entry = static_cast<uint32>(itemIds[index]);
+                uint32 amount = 1;
 
                 if (Item* item = Item::CreateItem(entry, amount)) {
                     item->SaveToDB(trans);
