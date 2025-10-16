@@ -119,7 +119,7 @@ public:
 
     void OnPlayerLogin(Player* player) override
     {
-        if (player->GetLevel() > 1)
+        if (player->GetLevel() > 1 && player->getClass() != CLASS_DEATH_KNIGHT)
             return;
 
         if(player->GetLevelUpType() != LEVEL_TYPE_NORMAL)
