@@ -25,8 +25,6 @@ private:
 
 void Azerothcore_skip_deathknight_HandleSkip(Player* player)
 {
-
-    ChatHandler(player->GetSession()).SendNotification("Hubo un error al migrar tu personaje, contacta un administrador.");
     //Not sure where DKs were supposed to pick this up from, leaving as the one manual add
     //player->AddItem(6948, true); //Hearthstone
 
@@ -122,13 +120,18 @@ public:
         if (player->GetLevel() > 1 && player->getClass() != CLASS_DEATH_KNIGHT)
             return;
 
+        ChatHandler(player->GetSession()).SendNotification("Si tu migración fue aprobada entonces habla con el NPC de migración en la ciudad principal para reclamarla.");
+
         if(player->GetLevelUpType() != LEVEL_TYPE_NORMAL)
             return;
+
+        ChatHandler(player->GetSession()).SendNotification("Tu personaje ya tiene un progreso, por favor contacta un administrador.");
 
         uint32 guid = player->GetGUID().GetCounter();
         QueryResult result = CharacterDatabase.Query("SELECT * FROM characters_migration_data WHERE guid = {} AND status = 0;", guid);
         if (result)
         {
+            ChatHandler(player->GetSession()).SendNotification("Tu migración fue aprobada, en unos segundos serás teletransportado a la ciudad principal.");
             if (player->getClass() == CLASS_DEATH_KNIGHT) {
                 Azerothcore_skip_deathknight_HandleSkip(player);
             }else
